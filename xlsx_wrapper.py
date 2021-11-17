@@ -4,62 +4,76 @@
 ----------------------
 """
 
-
 import re
 from pathlib import Path
-from typing import IO, Iterable, List, Dict
+from re import Match
+from typing import IO, Iterable, List, Dict, Optional
 
+import numpy as np
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
 
 class WrapperXLSX:
-    # TODO implement
-
     def get_sheet_column_names(self) -> List:
         _col_names = []
         for _col in self._sheet.iter_cols(max_row=1):
             _col_names.append(_col[0].value)
         return _col_names
 
-    def get_rows_data(self, offset: int = None, limit: int = None) -> List[Dict]:
-        data = []
+    def get_rows_data(self, col_amount: int = None, limit: int = None) -> np.array:
+        data: List[List] = []
 
-        col_names = self.get_sheet_column_names()
+        if col_amount is None:
+            col_amount = self.get_sheet_column_names().__len__()
 
-        min_row = offset
-        max_row = limit + (offset if offset else 0) if limit else None
+        limit = limit + 1 if limit else None
         for i, row in enumerate(self._sheet.iter_rows(values_only=True,
-                                                      min_row=min_row,
-                                                      max_row=max_row,
-                                                      max_col=len(col_names))):
-            if i == 0:
-                pass
-                # for name in col_names:
-                #     data_by_col[name] = []
-            else:
-                row_dict = {}
-                for j, col in enumerate(row):
-                    # data_by_col[col_names[j]].append(col)
-                    row_dict[col_names[j]] = col
-                data.append(row_dict)
+                                                      max_row=limit,
+                                                      max_col=col_amount)):
+            if i != 0:
+                data.append([col for col in row])
 
-        return data
+        return np.array(data)
 
     def __init__(self, sheet: Worksheet):
+        if sheet is None:
+            raise ValueError('sheet is None')
         self._sheet = sheet
 
 
 class OpenXLSX:
-    LIMIT_FILE_LEN = 50
+    _LIMIT_FILE_LEN = 50
 
     @classmethod
-    def get_generated_file_name_from_url(cls, url: str) -> str:
-        id_ = re.match(r'^.+/(?P<file_id>[\w-]+)/?$', url).group('file_id')
-        return str(id_)[:cls.LIMIT_FILE_LEN] + '.xlsx'
+    def _check_url(cls, url: str) -> Match:
+        url_match = re.match(r"^(?:(?P<scheme>https?)://)?"
+                             r"(?P<domain>[\w.-]+)"
+                             r"(?::(?P<port>\d+))?"
+                             r"(?P<routing>(?:/(?P<id>[\w.-]+))*)?/?"
+                             r"(?P<parameters>\?[^#]+)?"
+                             r"(?P<anchor>#.+)?$",
+                             url)
+        return url_match
 
     @classmethod
-    def download_from_google_sheets(cls, url: str, path_to_place: str = 'cache\\') -> str:
+    def create_by_cached_file(cls, url: str, path_to_place: str = 'cache\\') -> Optional["OpenXLSX"]:
+        # check url:
+        url_match = cls._check_url(url)
+        if not url_match:
+            raise ValueError(f'url "{url}" has wrong format')
+
+        # check path_to_place
+        if not Path(path_to_place).is_dir():
+            raise ValueError(f'path_to_place "{path_to_place}" is not a dictionary')
+
+        id_ = url_match.group('id')
+        file_name = path_to_place + str(id_)[:cls._LIMIT_FILE_LEN] + '.xlsx'
+
+        return cls(file_name) if Path(file_name).is_file() else None
+
+    @classmethod
+    def create_by_download_from_google_sheets(cls, url: str, path_to_place: str = 'cache\\') -> "OpenXLSX":
         """
         :param path_to_place: a path where to a downloaded file will be placed
         :param url: there is a file to download
@@ -67,9 +81,16 @@ class OpenXLSX:
         """
         import requests
 
-        # TODO check url & path_to_place arguments
+        # check url:
+        url_match = cls._check_url(url)
+        if not url_match:
+            raise ValueError(f'url "{url}" has wrong format')
 
-        id_ = re.match(r'^.+/(?P<file_id>[\w-]+)/?$', url).group('file_id')
+        # check path_to_place
+        if not Path(path_to_place).is_dir():
+            raise ValueError(f'path_to_place "{path_to_place}" is not a dictionary')
+
+        id_ = url_match.group('id')
         actual_file_url = url if url.endswith('/') else url + '/'
 
         download_file_request = '{}export?format=xlsx&id={}' \
@@ -78,29 +99,22 @@ class OpenXLSX:
         with requests.get(download_file_request) as response_data:
             path_to_place = path_to_place if path_to_place.endswith('\\') else path_to_place + '\\'
 
-            with open(path_to_place + str(id_)[:cls.LIMIT_FILE_LEN] + '.xlsx', 'wb') as f:
-                if response_data.status_code == 200:
-                    print(f'got a response with a status code = {response_data.status_code}')
+            if response_data.status_code == 200:
+                print(f'got a response with a status code = {response_data.status_code}')
+                with open(path_to_place + str(id_)[:cls._LIMIT_FILE_LEN] + '.xlsx', 'wb') as f:
                     f.write(response_data.content)
-                    print('xlsx file successfully stored')
-                else:
-                    print(f'Bad request: status code = {response_data.status_code}')
+                print('xlsx file successfully stored')
+            else:
+                print(f'Bad request: status code = {response_data.status_code}')
 
-        return path_to_place + str(id_)[:cls.LIMIT_FILE_LEN] + '.xlsx'
+        return cls(path_to_place + str(id_)[:cls._LIMIT_FILE_LEN] + '.xlsx')
 
     def __init__(self, file_name: str):
 
-        match = re.match(r'^(?P<full_path>(.:\\{1,2})?([\w.-]+\\{1,2})*)(?P<name>[\w.-]+[.]xlsx)$', file_name)
-        if match:
+        if Path(file_name).is_file():
             self.xlsx_file_name = file_name
-            print('full_path:', match.group('full_path'))
-            print('file_name:', match.group('name'))
-
-            if not Path(file_name).exists():
-                raise ValueError(f'file_name "{file_name}" is not exists')
-
         else:
-            raise ValueError(f'file_name "{file_name}" is not correct')
+            raise ValueError(f'file_name "{file_name}" is not exists')
 
     def __enter__(self) -> WrapperXLSX:
         self._xlsx = openpyxl.load_workbook(self.xlsx_file_name)

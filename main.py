@@ -295,9 +295,12 @@ def list_of_dicts_to_np_array(data: List[Dict]) -> np.array:
 def main():
     file_url = r'https://docs.google.com/spreadsheets/d/1E3w-YesqOOyxti2tN-DL-0VWbyas0aHzLzjKgh-JN-A/'
 
-    with OpenXLSX(OpenXLSX.download_from_google_sheets(file_url)) as xlsx:
-        col_names = xlsx.get_sheet_column_names()
-        raw_data = xlsx.get_rows_data()
+    xlsx = OpenXLSX.create_by_cached_file(file_url)
+    if not xlsx:
+        xlsx = OpenXLSX.create_by_download_from_google_sheets(file_url)
+    with xlsx as xlsx_wrapper:
+        col_names = xlsx_wrapper.get_sheet_column_names()
+        raw_data = xlsx_wrapper.get_rows_data()
 
     model, formatted_data = get_model_n_format_data(col_names, raw_data)
 
