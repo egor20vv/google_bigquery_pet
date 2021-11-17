@@ -3,6 +3,9 @@
  Execute segment
 -----------------
 """
+from bigquery_interactor import load_data_to_bigquery
+from sheet_data_model_generator import generate_model, get_formatted_data_by_model
+from xlsx_wrapper import OpenXLSX
 
 from bigquery_interactor import load_data_to_bigquery
 from sheet_data_model_generator import generate_model, get_formatted_data_by_model
