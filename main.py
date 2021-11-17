@@ -12,9 +12,9 @@ import pandas
 
 
 """
-----------------------------------------
- Generate model over sheet data segment
-----------------------------------------
+------------------------------------
+ Sheet data model generator segment
+------------------------------------
 """
 
 
@@ -90,7 +90,7 @@ def get_actual_column_model(val: Any, col_model: List) -> List:
         return col_model
 
 
-def set_data_to_column_model(val: Any, col_model: List) -> Any:
+def set_value_to_column_model(val: Any, col_model: List) -> Any:
     type_ = col_model[1]
     if type_ is None or val is None:
         return None
@@ -105,43 +105,55 @@ def set_data_to_column_model(val: Any, col_model: List) -> Any:
         return str(val)
 
 
-def get_model_n_format_data(col_names: Iterable[str], data: List[Dict]) -> Tuple[Dict, List[Dict]]:
+def get_formatted_data_by_model(model: Dict[str, List], col_names: Iterable[str], data: np.array) -> np.array:
+    """
+    :param model:
+    :param col_names:
+    :param data:
+    :return: data_formatted_by_model: np.array
+    """
+
+    data = data.copy()
+
+    # format data
+    for row in data:
+        for x, col_name in enumerate(col_names):
+            val = row[x]
+            col_model = model[col_name]
+            try:
+                row[x] = set_value_to_column_model(val, col_model)
+            except Exception:
+                pass
+
+    return data
+
+
+def generate_model(col_names: Iterable[str], data: np.array) -> Dict[str, List]:
     """
     :param col_names:
     :param data:
-    :return: Tuple [model: Tuple[name, type, required, max_len], data_works_by_model: List[Dict]]
+    :return: Dict[col_name: str, model: List[name, type, is_required, max_len]
     """
-    # set default model
     model = {}
     for col_name in col_names:
         model[col_name] = [col_name, None, True, 0]
 
     # set model
     for row in data:
-        for col_name in col_names:
-            val = row[col_name]
+        for x, col_name in enumerate(col_names):
+            val = row[x]
             col_model = model[col_name]
             try:
                 model[col_name] = get_actual_column_model(val, col_model)
             except Exception:
                 model[col_name] = col_model
 
-    # format data
-    for row in data:
-        for col_name in col_names:
-            val = row[col_name]
-            col_model = model[col_name]
-            try:
-                row[col_name] = set_data_to_column_model(val, col_model)
-            except Exception:
-                pass
-
     # except max len for bool, int, float
     for key, val in model.items():
         if val[1] is None or val[1] in (int, bool, float):
             del model[key][3]
 
-    return model, data
+    return model
 
 
 """
@@ -183,7 +195,7 @@ def get_unique_table_name(client: Client, dataset_id: str, table_id_name: str, t
 
 def add_copy_number_to_name(old_name: str) -> str:
     new_name = old_name
-    copy_number = re.match(r'^.+(_(?P<number>[\d]+))?$', old_name)
+    copy_number = re.match(r'^.+?(_(?P<number>[0-9]+))?$', old_name)
     if copy_number:
         old_copy_number = copy_number.group('number')
         if old_copy_number:
@@ -199,15 +211,16 @@ def add_copy_number_to_name(old_name: str) -> str:
 
 
 def get_schema_kwargs(raw_schema: Dict[str, List], schema_kwargs: List, lambdas: List) -> List[Dict]:
-    # if len(raw_schema) != len(schema_kwargs):
-    #     raise ValueError(f'len of all argument lists must be the same:\n'
-    #                      f'raw_schema len - {len(raw_schema)},\n'
-    #                      f'schema_kwargs len - {len(schema_kwargs)},\n'
-    #                      f'lambdas len - {len(lambdas)}')
+    if len(schema_kwargs) != len(lambdas):
+        raise ValueError(f'len of schema_kwargs "{len(schema_kwargs)}" and lambdas "{len(lambdas)}" is not the same')
 
     result = []
 
     for key, val in raw_schema.items():
+        if len(val) > len(lambdas):
+            raise ValueError(f'len of value "{len(val)}" of raw_schema[{key}] is greater than '
+                             f'len of lambdas and schema_kwargs "{len(lambdas)}"')
+
         param_dict = {}
         for i, param in enumerate(val):
             param_dict[schema_kwargs[i]] = lambdas[i](param)
@@ -237,37 +250,33 @@ def load_to_bigquery(dataset_id_name: str,
                      model: Dict[str, List],
                      data: np.array) -> str:
     # Construct a BigQuery client object.
-    client = bigquery.Client()
+    with bigquery.Client() as client:
 
-    dataset_id = f'{client.project}.{dataset_id_name}'
+        dataset_id = f'{client.project}.{dataset_id_name}'
+        create_dataset_if_its_not(client, dataset_id)
 
-    dataset: Dataset
-    table: Table
+        table_id_name = get_unique_table_name(client, dataset_id, table_id_name)
+        table_id = f'{dataset_id}.{table_id_name}'
 
-    dataset = create_dataset_if_its_not(client, dataset_id)
+        # create table:
+        # create schema
+        appropriate_types = {
+            bool: 'BOOL',
+            int: 'INTEGER',
+            float: 'FLOAT',
+            str: 'STRING',
+            None: 'STRING'
+        }
+        schema = get_schema_kwargs(model,
+                                   ['name', 'field_type', 'mode', 'max_length'],
+                                   [
+                                       lambda name: name,
+                                       lambda type_: appropriate_types[type_],
+                                       lambda mode: 'REQUIRED' if mode else 'NULLABLE',
+                                       lambda max_len: max_len + 1
+                                   ])
 
-    table_id_name = get_unique_table_name(client, dataset_id, table_id_name)
-    table_id = f'{dataset_id}.{table_id_name}'
-
-    # create table:
-    # create schema
-    appropriate_types = {
-        bool: 'BOOL',
-        int: 'INTEGER',
-        float: 'FLOAT',
-        str: 'STRING',
-        None: 'STRING'
-    }
-    schema = get_schema_kwargs(model,
-                               ['name', 'field_type', 'mode', 'max_length'],
-                               [
-                                   lambda name: name,
-                                   lambda type_: appropriate_types[type_],
-                                   lambda mode: 'REQUIRED' if mode else 'NULLABLE',
-                                   lambda max_len: max_len + 1
-                               ])
-
-    return create_table(client, table_id, schema, column_names, data)
+        return create_table(client, table_id, schema, column_names, data)
 
 
 """
@@ -278,34 +287,23 @@ def load_to_bigquery(dataset_id_name: str,
 
 
 DATASET_ID = 'my_test_dataset'
-
 TABLE_ID = 'test_table'
-
-
-def list_of_dicts_to_np_array(data: List[Dict]) -> np.array:
-    result = []
-    for row in data:
-        result_row = []
-        for key, val in row.items():
-            result_row.append(val)
-        result.append(result_row)
-    return np.array(result)
 
 
 def main():
     file_url = r'https://docs.google.com/spreadsheets/d/1E3w-YesqOOyxti2tN-DL-0VWbyas0aHzLzjKgh-JN-A/'
 
     xlsx = OpenXLSX.create_by_cached_file(file_url)
-    if not xlsx:
+    if xlsx is None:
         xlsx = OpenXLSX.create_by_download_from_google_sheets(file_url)
     with xlsx as xlsx_wrapper:
         col_names = xlsx_wrapper.get_sheet_column_names()
-        raw_data = xlsx_wrapper.get_rows_data()
+        raw_data = xlsx_wrapper.get_rows_data(len(col_names), limit=10)
 
-    model, formatted_data = get_model_n_format_data(col_names, raw_data)
+    model = generate_model(col_names, raw_data)
+    formatted_data = get_formatted_data_by_model(model, col_names, raw_data)
 
-    lilt_of_lists_data = list_of_dicts_to_np_array(formatted_data)
-    response = load_to_bigquery(DATASET_ID, TABLE_ID, col_names, model, lilt_of_lists_data)
+    response = load_to_bigquery(DATASET_ID, TABLE_ID, col_names, model, formatted_data)
     print('response of action:', response)
 
 
